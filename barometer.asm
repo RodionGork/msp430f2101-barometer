@@ -17,15 +17,13 @@ start:
     mov.w #(RAM_START + RAM_SIZE), SP
     mov.b &CALBC1_1MHZ, &BCSCTL1
     mov.b &CALDCO_1MHZ, &DCOCTL
-    mov.b #2, &P1DIR
+    mov.b #3, &P1DIR
     mov.b #0, &P2REN
     mov.b #0, &P2DIR
     mov.b #0, &P2OUT
 
-    mov.b #20h, r9
-    mov.b #80h, r8
-    call #I2C_SEND
-    
+    call #RESET_SENSOR
+
 repeat:
     mov.b #21h, r9
     mov.b #1, r8
@@ -39,12 +37,14 @@ repeat:
     call #pressure
     mov.b #' ', r8
     call #UART_SEND
+    mov.w #1000, r8
+    call #DELAY
     call #temperature
     mov.b #13, r8
     call #UART_SEND
     mov.b #10, r8
     call #UART_SEND
-    mov.w #100, r8
+    mov.w #4000, r8
     call #DELAY
     jmp repeat
 
@@ -64,8 +64,7 @@ pressure:
     rla.w r10
     rla.w r10
     mov.w #341, r9
-    call #divide_sub
-    call #UART_SEND_H2
+    call #DIVIDE_AND_PRINT
     ret
 
 temperature:
@@ -80,13 +79,70 @@ temperature:
     mov.w r10, r8
     add.w #20400, r10
     mov.w #480, r9
-    call #divide_sub
-    call #UART_SEND_H2
+    call #DIVIDE_AND_PRINT
     ret
-    
-;======
+
+DIVIDE_AND_PRINT:
+    call #DIVIDE_SUB
+    call #TO_DECIMAL
+    push r8
+    mov r9, r8
+    call #BLINK_DECIMAL
+    call #UART_SEND_H1
+    pop r8
+    call #BLINK_DECIMAL
+    call #UART_SEND_H1
+    ret
+
+;========
+; indicates value from R8
+; by blinks on P1.0
+; long blink is 5, short is 1
+; two long means 0, not 10
+BLINK_DECIMAL:
+    push r8
+    push r9
+    cmp.b #0, r8
+    jne blink_decimal_nz
+    mov.w #1000, r9
+    call #BLINK_MS
+    add.b #5, r8
+    blink_decimal_nz:
+    cmp.b #5, r8
+    jlo blink_decimal_ones
+    mov.w #1000, r9
+    call #BLINK_MS
+    sub.b #5, r8
+    blink_decimal_ones:
+    cmp.b #0, r8
+    jeq blink_decimal_stop
+    mov.w #300, r9
+    call #BLINK_MS
+    dec.b r8
+    jmp blink_decimal_ones
+    blink_decimal_stop:
+    mov.w #800, r8
+    call #DELAY
+    pop r9
+    pop r8
+    ret
+
+;=========================
+; blinks on P1.0 for R9 ms
+BLINK_MS:
+    push r8
+    mov r9, r8
+    bis.b #1, &P1OUT
+    call #DELAY
+    bic.b #1, &P1OUT
+    mov #200, r8
+    call #DELAY
+    pop r8
+    ret
+
+;===============
 ; r8 = r10 / r9
-divide_sub:
+DIVIDE_SUB:
     push r10
     mov.w #0, r8
     divide_rep:
@@ -94,6 +150,47 @@ divide_sub:
     sub.w r9, r10
     jc divide_rep
     pop r10
+    ret
+
+;========================
+; r8 -> r9:r8 (both 0..9)
+TO_DECIMAL:
+    mov.w #0, r9
+    to_decimal_0:
+    cmp #0, r8
+    jeq to_decimal_1
+    dec r8
+    clrc
+    dadd #1, r9
+    jmp to_decimal_0
+    to_decimal_1:
+    mov.b r9, r8
+    bic.b #0F0h, r8
+    rra.b r9
+    rra.b r9
+    rra.b r9
+    rra.b r9
+    ret
+
+;============
+RESET_SENSOR:
+    mov.w #100, r8
+    call #DELAY
+    call #I2C_STOP
+    mov.b #20, r8
+    reset_sensor_i2c:
+    call #I2C_SCL_LO
+    call #I2C_SCL_HI
+    dec r8
+    jnz reset_sensor_i2c
+    call #I2C_START
+    call #I2C_STOP
+    mov.b #20h, r9
+    mov.b #00h, r8
+    call #I2C_SEND
+    mov.b #20h, r9
+    mov.b #80h, r8
+    call #I2C_SEND
     ret
 
 ;========
@@ -216,37 +313,6 @@ I2C_DELAY:
     pop r8
     ret
 
-;================================
-; waits and receives byte into r8
-UART_RECEIVE:
-    push r9
-    mov.w #(1000000 / BAUD_RATE - 1), &TACCR0
-    mov.w &TACCR0, &TAR
-    rra.w &TAR
-    mov #9, r9
-
-    uart_receive_wait:
-    bit.b #100b, &P2IN
-    jnz uart_receive_wait
-    mov.w #210h, &TACTL
-
-    uart_receive_next:
-    and.b #1, &TACCTL0
-    jz uart_receive_next
-    clrc
-    rrc.b r8
-    bit.b #100b, &P2IN
-    jz uart_receive_zero
-    bis.b #80h, r8
-    uart_receive_zero:
-    mov.b #0, &TACCTL0
-    dec.b r9
-    jnz uart_receive_next
-
-    mov.w #0, &TACTL
-    pop r9
-    ret
-
 ;=======================
 ; sends hex char from r8
 UART_SEND_H1:
@@ -259,28 +325,6 @@ UART_SEND_H1:
     uart_send_h_dec:
     call #UART_SEND
     pop r8
-    ret
-
-;=======================
-; sends hex byte from r8
-UART_SEND_H2:
-    push r8
-    rra r8
-    rra r8
-    rra r8
-    rra r8
-    call #UART_SEND_H1
-    pop r8
-    call #UART_SEND_H1
-    ret
-
-;=======================
-; sends hex byte from r8
-UART_SEND_H4:
-    swpb r8
-    call #UART_SEND_H2
-    swpb r8
-    call #UART_SEND_H2
     ret
 
 ;========================
