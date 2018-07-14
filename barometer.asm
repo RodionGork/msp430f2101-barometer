@@ -331,28 +331,29 @@ UART_SEND_H1:
 ; sends character from r8
 UART_SEND:
     push r8
-    push r10
     mov.w #(1000000 / BAUD_RATE - 1), &TACCR0
     mov.w #210h, &TACTL
     bic.w #0FE00h, r8
     bis.w #100h, r8
     rla.w r8
-    
+
     uart_send_rep:
-    and.b #1, &TACCTL0
+    bit.b #1, &TACCTL0
     jz uart_send_rep
     mov.b #0, &TACCTL0
-    
-    mov.b r8, r10
-    and.b 1, r10
-    add.b r10, r10
-    mov.b r10, &P1OUT
-    
+
+    bit.w #1, r8
+    jz uart_send_0
+    bis.b #2, &P1OUT
+    jmp uart_send_ok
+    uart_send_0:
+    bic.b #2, &P1OUT
+
+    uart_send_ok:
     rra.w r8
     jnz uart_send_rep
-    
+
     mov.w #0, &TACTL
-    pop r10
     pop r8
     ret
 
