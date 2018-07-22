@@ -11,6 +11,9 @@ CALBC1_1MHZ equ 10FFh
 RAM_START equ 200h
 RAM_SIZE equ 128
 
+PIN_SDA equ 1   ; on port 2
+PIN_SCL equ 0   ; on port 2
+
 .org 0F800h
 start:
     mov.w #WDTPW|WDTHOLD, &WDTCTL
@@ -243,7 +246,7 @@ I2C_WRITE_BYTE:
     call #I2C_SDA_HI
     call #I2C_SCL_HI
     mov.b &P2IN, r8
-    and.b #10000b, r8
+    and.b #(1 << PIN_SDA), r8
     call #I2C_SCL_LO
     pop r9
     ret
@@ -257,7 +260,7 @@ I2C_READ_BYTE:
     i2c_read_rep:
     call #I2C_SCL_HI
     rla.w r8
-    bit.b #10000b, &P2IN
+    bit.b #(1 << PIN_SDA), &P2IN
     jz i2c_read_0
     bis.w #1, r8
     i2c_read_0:
@@ -285,23 +288,19 @@ I2C_STOP:
 ;=================================
 ; scl and sda pin control routines
 I2C_SCL_LO:
-    bis.b #1000b, &P2DIR
-    ;bic.b #1000b, &P2OUT
+    bis.b #(1 << PIN_SCL), &P2DIR
     call #I2C_DELAY
     ret
 I2C_SCL_HI:
-    bic.b #1000b, &P2DIR
-    ;bis.b #1000b, &P2OUT
+    bic.b #(1 << PIN_SCL), &P2DIR
     call #I2C_DELAY
     ret
 I2C_SDA_LO:
-    bis.b #10000b, &P2DIR
-    ;bic.b #10000b, &P2OUT
+    bis.b #(1 << PIN_SDA), &P2DIR
     call #I2C_DELAY
     ret
 I2C_SDA_HI:
-    bic.b #10000b, &P2DIR
-    ;bis.b #10000b, &P2OUT
+    bic.b #(1 << PIN_SDA), &P2DIR
     call #I2C_DELAY
     ret
 I2C_DELAY:
