@@ -4,12 +4,14 @@
 
 .entry_point start
 
-BAUD_RATE equ 9600
-
-CALDCO_1MHZ equ 10FEh
-CALBC1_1MHZ equ 10FFh
 RAM_START equ 200h
 RAM_SIZE equ 128
+
+I2C_ADDR_PRESSURE equ 5Dh
+I2C_ADDR_HUMIDITY equ 5Ch
+INFO_MEM_START equ 1000h
+PRESSURE_CALIBRATION equ (INFO_MEM_START + 0)
+TEMPERATURE_CALIBRATION equ (INFO_MEM_START + 2)
 
 PIN_SDA equ 1   ; on port 2
 PIN_SCL equ 0   ; on port 2
@@ -18,16 +20,45 @@ PIN_SCL equ 0   ; on port 2
 start:
     mov.w #WDTPW|WDTHOLD, &WDTCTL
     mov.w #(RAM_START + RAM_SIZE), SP
-    mov.b &CALBC1_1MHZ, &BCSCTL1
-    mov.b &CALDCO_1MHZ, &DCOCTL
-    mov.b #3, &P1DIR
+    mov.b #0, &P1REN
+    mov.b #0, &P1DIR
     mov.b #0, &P2REN
     mov.b #0, &P2DIR
     mov.b #0, &P2OUT
 
-    call #RESET_SENSOR
-
 repeat:
+    call #RESET_SENSOR
+    
+    call #PRESSURE
+    mov.w #1000, r8
+    call #DELAY
+    call #TEMPERATURE
+    mov.w #1000, r8
+    call #DELAY
+    
+    call #POWER_DOWN
+    
+    jmp repeat
+
+POWER_DOWN:
+    mov.b #I2C_ADDR_PRESSURE, r13
+    mov.b #20h, r9
+    mov.b #00h, r8
+    call #I2C_SEND
+    mov.b #0, &P1DIR
+    mov.b #0, &P1REN
+    mov.b #0, &P2DIR
+    mov.b #0, &P2REN
+    bis.b #1000b, &P2DIR
+    bic.b #1000b, &P2OUT
+    bis.b #0FFh, &P1DIR
+    mov.b #7Fh, &P1OUT
+    mov.b #0F0h, sr
+    ret
+
+PRESSURE:
+    mov.b #I2C_ADDR_PRESSURE, r13
+    ;start measurement
     mov.b #21h, r9
     mov.b #1, r8
     call #I2C_SEND
@@ -36,22 +67,7 @@ repeat:
     call #I2C_RECEIVE
     bit.b #1, r8
     jnz wait_complete
-    
-    call #pressure
-    mov.b #' ', r8
-    call #UART_SEND
-    mov.w #1000, r8
-    call #DELAY
-    call #temperature
-    mov.b #13, r8
-    call #UART_SEND
-    mov.b #10, r8
-    call #UART_SEND
-    mov.w #4000, r8
-    call #DELAY
-    jmp repeat
-
-pressure:
+    ;receive results
     mov.b #2Ah, r8
     call #I2C_RECEIVE
     mov.b r8, r10
@@ -60,7 +76,7 @@ pressure:
     call #I2C_RECEIVE
     bic.w #0FF00h, r8
     add.w r8, r10
-    mov.w r10, r8
+    add.w &PRESSURE_CALIBRATION, r10
     sub.w #14932, r10
     rla.w r10
     rla.w r10
@@ -70,7 +86,8 @@ pressure:
     call #DIVIDE_AND_PRINT
     ret
 
-temperature:
+TEMPERATURE:
+    mov.b #I2C_ADDR_PRESSURE, r13
     mov.b #2Ch, r8
     call #I2C_RECEIVE
     mov.b r8, r10
@@ -79,69 +96,118 @@ temperature:
     call #I2C_RECEIVE
     bic.w #0FF00h, r8
     add.w r8, r10
-    mov.w r10, r8
+    add.w &(TEMPERATURE_CALIBRATION), r10
     add.w #20400, r10
+    bit.w #8000h, r10
+    jz temp_positive
+    push r10
+    mov.w #1010h, r9
+    mov.w #150, r10
+    call #SHOW_DIGITS
+    pop r10
+    inv.w r10
+    temp_positive:
     mov.w #480, r9
     call #DIVIDE_AND_PRINT
     ret
 
-DIVIDE_AND_PRINT:
-    call #DIVIDE_SUB
-    call #TO_DECIMAL
-    push r8
-    mov r9, r8
-    call #BLINK_DECIMAL
-    call #UART_SEND_H1
-    pop r8
-    call #BLINK_DECIMAL
-    call #UART_SEND_H1
+HUMIDITY:
+    mov.b #I2C_ADDR_HUMIDITY, r13
+    mov.b #0, r8
+    call #I2C_RECEIVE
+    call #DECIMIZE_AND_PRINT
+    mov.b #200, r8
+    call #DELAY
+    mov.b #1, r8
+    call #I2C_RECEIVE
+    call #DECIMIZE_AND_PRINT
+    mov.b #200, r8
+    call #DELAY
+    mov.b #2, r8
+    call #I2C_RECEIVE
+    call #DECIMIZE_AND_PRINT
+    mov.b #200, r8
+    call #DELAY
+    mov.b #3, r8
+    call #I2C_RECEIVE
+    call #DECIMIZE_AND_PRINT
     ret
 
-;========
-; indicates value from R8
-; by blinks on P1.0
-; long blink is 5, short is 1
-; two long means 0, not 10
-BLINK_DECIMAL:
+TEMPERATURE2:
+    mov.b #I2C_ADDR_HUMIDITY, r13
+    mov.b #2, r8
+    call #I2C_RECEIVE
+    call #DECIMIZE_AND_PRINT
+    ret
+
+DIVIDE_AND_PRINT:
+    call #DIVIDE_SUB
+DECIMIZE_AND_PRINT:
+    call #TO_DECIMAL
+    and.w #0FFh, r9
+    and.w #0FFh, r8
+    swpb r9
+    add.w r8, r9
+    
+    mov.w #200, r10
+    call #SHOW_DIGITS
+    ret
+
+;======================
+; digits in r9, count in r10 (milliseconds)
+SHOW_DIGITS:
+    push r8
+    push r10
+    push r11
+    show_digits_0:
+    mov.b r9, r11
+    add.w #digits, r11
+    mov.b #7Fh, P1DIR
+    mov.b @r11, &P1OUT
+    bis.b #1000b, P2DIR
+    bis.b #1000b, P2OUT
+    mov.b #2, r8
+    call #DELAY
+    bic.b #1000b, P2DIR
+    swpb r9
+    mov.b r9, r11
+    add.w #digits, r11
+    mov.b @r11, &P1OUT
+    bis.b #10000000b, &P1DIR
+    bis.b #10000000b, &P1OUT
+    mov.b #2, r8
+    call #DELAY
+    mov.b #0, &P1DIR
+    swpb r9
+    dec.w r10
+    jnz show_digits_0
+    pop r11
+    pop r10
+    pop r8
+    ret
+
+;====================
+; Hex value in r8 (low), count in r10 (millis)
+SHOW_HEX:
     push r8
     push r9
-    cmp.b #0, r8
-    jne blink_decimal_nz
-    mov.w #1000, r9
-    call #BLINK_MS
-    add.b #5, r8
-    blink_decimal_nz:
-    cmp.b #5, r8
-    jlo blink_decimal_ones
-    mov.w #1000, r9
-    call #BLINK_MS
-    sub.b #5, r8
-    blink_decimal_ones:
-    cmp.b #0, r8
-    jeq blink_decimal_stop
-    mov.w #300, r9
-    call #BLINK_MS
-    dec.b r8
-    jmp blink_decimal_ones
-    blink_decimal_stop:
-    mov.w #800, r8
-    call #DELAY
+    mov.b r8, r9
+    and.b #0F0h, r9
+    add.w r9, r9
+    add.w r9, r9
+    add.w r9, r9
+    add.w r9, r9
+    and.b #0Fh, r8
+    add.w r8, r9
+    call #SHOW_DIGITS
     pop r9
     pop r8
     ret
 
-;=========================
-; blinks on P1.0 for R9 ms
-BLINK_MS:
-    push r8
-    mov r9, r8
-    bis.b #1, &P1OUT
-    call #DELAY
-    bic.b #1, &P1OUT
-    mov #200, r8
-    call #DELAY
-    pop r8
-    ret
+digits:
+    db ~7Eh, ~60h, ~5Bh, ~6Bh, ~65h, ~2Fh, ~3Fh, ~62h
+    db ~7Fh, ~6Fh, ~77h, ~3Dh, ~1Eh, ~79h, ~1Fh, ~17h
+    db ~01h, ~00h ; minus sign
 
 ;===============
 ; r8 = r10 / r9
@@ -188,6 +254,7 @@ RESET_SENSOR:
     jnz reset_sensor_i2c
     call #I2C_START
     call #I2C_STOP
+    mov.b #I2C_ADDR_PRESSURE, r13
     mov.b #20h, r9
     mov.b #00h, r8
     call #I2C_SEND
@@ -201,7 +268,8 @@ RESET_SENSOR:
 I2C_SEND:
     push r8
     call #I2C_START
-    mov  #(5Ch * 2), r8
+    mov.b  r13, r8
+    rla.b r8
     call #I2C_WRITE_BYTE
     mov r9, r8
     call #I2C_WRITE_BYTE
@@ -215,12 +283,15 @@ I2C_SEND:
 I2C_RECEIVE:
     push r8
     call #I2C_START
-    mov  #(5Ch * 2), r8
+    mov.b  r13, r8
+    rla.b r8
     call #I2C_WRITE_BYTE
     pop r8
     call #I2C_WRITE_BYTE
     call #I2C_START
-    mov  #(5Ch * 2 + 1), r8
+    mov.b  r13, r8
+    rla.b r8
+    inc.b r8
     call #I2C_WRITE_BYTE
     call #I2C_READ_BYTE
     call #I2C_STOP
@@ -309,50 +380,6 @@ I2C_DELAY:
     i2c_delay_repeat:
     dec r8
     jnz i2c_delay_repeat
-    pop r8
-    ret
-
-;=======================
-; sends hex char from r8
-UART_SEND_H1:
-    push r8
-    bic.b #0F0h, r8
-    add.b #'0', r8
-    cmp.b #('9' + 1), r8
-    jn uart_send_h_dec
-    add.b #('A'-'0'-10), r8
-    uart_send_h_dec:
-    call #UART_SEND
-    pop r8
-    ret
-
-;========================
-; sends character from r8
-UART_SEND:
-    push r8
-    mov.w #(1000000 / BAUD_RATE - 1), &TACCR0
-    mov.w #210h, &TACTL
-    bic.w #0FE00h, r8
-    bis.w #100h, r8
-    rla.w r8
-
-    uart_send_rep:
-    bit.b #1, &TACCTL0
-    jz uart_send_rep
-    mov.b #0, &TACCTL0
-
-    bit.w #1, r8
-    jz uart_send_0
-    bis.b #2, &P1OUT
-    jmp uart_send_ok
-    uart_send_0:
-    bic.b #2, &P1OUT
-
-    uart_send_ok:
-    rra.w r8
-    jnz uart_send_rep
-
-    mov.w #0, &TACTL
     pop r8
     ret
 
