@@ -15,3 +15,8 @@ So, for example, values above are blinked like this:
 
     ===== ==     == == == ==          == ==     ===== == ==
         6             4                 2            7
+
+### Digital indicator
+
+Branch [sevenseg](https://github.com/RodionGork/msp430f2101-barometer/tree/sevenseg)
+contains version which uses 2-digits seven-segment LED indicator.
